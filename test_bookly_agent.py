@@ -11,11 +11,17 @@ directly; the tool layer, so the parts of the code that would silently break
 a demo if they had a bug.
 """
 
+import os
+
 from bookly_agent import (
     get_order_status,
     check_return_eligibility,
     initiate_return,
     lookup_orders_by_email,
+    load_policies,
+    log_tool_call,
+    _hash_email,
+    AUDIT_LOG_PATH,
 )
 
 passed = 0
@@ -74,5 +80,24 @@ check("jsmith@example.com has exactly two orders", result["count"] == 2)
 
 result = lookup_orders_by_email("nobody@example.com")
 check("unknown email returns zero orders, not an error", result["count"] == 0)
+
+# --- AOP-style policy file is actually being loaded, not just present on disk ---
+policies_text = load_policies()
+check("policy file loads and is non-empty", len(policies_text) > 0)
+check("policy file mentions the identity check rule", "Identity check" in policies_text)
+check("policy file documents excluded scope", "Out of scope" in policies_text)
+
+# --- Audit logging never writes raw email, and appends a line per call ---
+check("email hashing does not return the raw email", _hash_email("jsmith@example.com") != "jsmith@example.com")
+check("email hashing is deterministic", _hash_email("jsmith@example.com") == _hash_email("JSmith@Example.com"))
+
+lines_before = 0
+if os.path.exists(AUDIT_LOG_PATH):
+    with open(AUDIT_LOG_PATH) as f:
+        lines_before = len(f.readlines())
+log_tool_call("get_order_status", {"order_id": "BK-1001", "email": "jsmith@example.com"}, {"found": True})
+with open(AUDIT_LOG_PATH) as f:
+    lines_after = len(f.readlines())
+check("audit log gains exactly one line per tool call", lines_after == lines_before + 1)
 
 print(f"\n{passed}/{passed} checks passed.")

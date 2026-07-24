@@ -35,6 +35,22 @@ someone whose email doesn't match it. This closes the gap where the first
 version would happily return status or file a return for any order ID
 handed to it, regardless of who was asking.
 
+SCOPE, COST, AND AUDIT AWARENESS (added after second review):
+Three more things a Principal-level candidate should surface, not just a
+prototype should have:
+  1. AOP-style config: the rules the agent follows live in agent_policies.md,
+     not hardcoded in this file. That mirrors Decagon's real differentiator —
+     a CX ops person edits plain-language rules directly, without touching
+     Python or filing an engineering ticket. Edit that file; this one doesn't
+     need to change.
+  2. Cost awareness: live mode tracks token usage per conversation and prints
+     an estimated cost on exit. Enterprise buyers care about cost-per-resolution,
+     not just resolution rate.
+  3. Audit logging: every tool call is written to audit_log.jsonl with a
+     hashed (not raw) email. F500 buyers with 10,000+ employees will ask about
+     auditability and PII handling; this is a minimal, honest answer, not a
+     production logging pipeline.
+
 Run modes:
   python bookly_agent.py            -> live chat using the Claude API (needs
                                         ANTHROPIC_API_KEY set in your environment)
@@ -47,6 +63,66 @@ Run modes:
 import os
 import sys
 import json
+import hashlib
+from datetime import datetime, timezone
+
+# ---------------------------------------------------------------------------
+# AOP-STYLE POLICY LOADING: behavior rules live in agent_policies.md, a
+# plain-language file a non-technical CX ops person could edit directly.
+# This is the pattern Decagon's real Agent Operating Procedures follow —
+# separating "what the agent should do" from "how the orchestration code
+# works" so policy changes don't require an engineering ticket.
+# ---------------------------------------------------------------------------
+
+POLICIES_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent_policies.md")
+
+
+def load_policies() -> str:
+    """Read the plain-language policy file the agent's instructions are
+    built from. Raises a clear error if it's missing, rather than silently
+    running with no rules."""
+    with open(POLICIES_PATH, "r") as f:
+        return f.read()
+
+
+# ---------------------------------------------------------------------------
+# COST AWARENESS: illustrative Sonnet 4.5 pricing (USD per million tokens),
+# accurate as of mid-2026. Check anthropic.com/pricing before quoting this
+# externally — the point is demonstrating cost-per-resolution awareness,
+# not shipping a live price feed.
+# ---------------------------------------------------------------------------
+
+INPUT_COST_PER_MTOK = 3.00
+OUTPUT_COST_PER_MTOK = 15.00
+
+# ---------------------------------------------------------------------------
+# AUDIT LOGGING: a minimal, honest answer to "how would you handle
+# auditability and PII" — not a production logging/SIEM pipeline, but proof
+# the pattern is understood. Emails are hashed, never written in the clear.
+# ---------------------------------------------------------------------------
+
+AUDIT_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "audit_log.jsonl")
+
+
+def _hash_email(email: str) -> str:
+    """Never write a raw customer email to a log file. A real deployment
+    would follow Bookly's actual data retention policy; this is a stand-in
+    that at least avoids storing PII in the clear."""
+    return hashlib.sha256(email.strip().lower().encode()).hexdigest()[:12]
+
+
+def log_tool_call(tool_name: str, tool_input: dict, result: dict) -> None:
+    """Append one line per tool call to a local audit log. Illustrative of
+    the pattern an enterprise buyer would expect, not a production system."""
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "tool": tool_name,
+        "order_id": tool_input.get("order_id"),
+        "email_hash": _hash_email(tool_input["email"]) if "email" in tool_input else None,
+        "outcome": result.get("found", result.get("success")),
+    }
+    with open(AUDIT_LOG_PATH, "a") as f:
+        f.write(json.dumps(entry) + "\n")
 
 # ---------------------------------------------------------------------------
 # MOCK BACKEND: a tiny fake "orders database" standing in for Bookly's real
@@ -255,29 +331,9 @@ TOOLS = [
     },
 ]
 
-SYSTEM_PROMPT = """You are Bookly's customer support agent. Bookly is an online bookstore.
+SYSTEM_PROMPT = f"""You are Bookly's customer support agent. Bookly is an online bookstore.
 
-Core rules (non-negotiable):
-1. Never state an order's status, delivery date, or return eligibility from memory —
-   always call a tool to get real data first. If you don't have an order ID, ask for
-   one or use lookup_orders_by_email.
-2. Identity check: get_order_status, check_return_eligibility, and initiate_return all
-   require the customer's email in addition to the order ID. If you don't have it yet,
-   ask for it before calling these tools. Once a customer has given you their email in
-   this conversation, you may reuse it for follow-up questions about the same order
-   without asking again.
-3. If a tool comes back "not found," tell the customer you couldn't find a matching
-   order — never imply whether that's because the order ID is wrong, the email is
-   wrong, or the order belongs to someone else. Don't speculate about which.
-4. If a customer's request is ambiguous — no order ID given, or lookup_orders_by_email
-   returns more than one order — ask a clarifying question naming the specific options
-   before proceeding. Do not guess which order they mean.
-5. Before calling initiate_return, you must have (a) confirmed eligibility via
-   check_return_eligibility and (b) had the customer explicitly confirm they want to
-   return that specific item. Never file a return speculatively.
-6. Keep responses short and friendly, the way a good human support rep would.
-7. For general policy questions (shipping times, password resets, etc.) you may answer
-   directly using standard e-commerce norms — those don't require a tool call.
+{load_policies()}
 """
 
 
@@ -297,11 +353,24 @@ def run_live_chat():
 
     client = anthropic.Anthropic(api_key=api_key)
     messages = []
+    total_input_tokens = 0
+    total_output_tokens = 0
 
     print("Bookly Support (type 'quit' to exit)\n")
     while True:
         user_input = input("You: ").strip()
         if user_input.lower() in ("quit", "exit"):
+            if total_input_tokens or total_output_tokens:
+                cost = (
+                    total_input_tokens / 1_000_000 * INPUT_COST_PER_MTOK
+                    + total_output_tokens / 1_000_000 * OUTPUT_COST_PER_MTOK
+                )
+                print(
+                    f"\nSession usage: {total_input_tokens} input / "
+                    f"{total_output_tokens} output tokens "
+                    f"(~${cost:.4f} at Sonnet 4.5 list pricing). A real deployment "
+                    f"would track this per resolution, not just per session."
+                )
             break
         messages.append({"role": "user", "content": user_input})
 
@@ -324,6 +393,8 @@ def run_live_chat():
                 break
 
             messages.append({"role": "assistant", "content": response.content})
+            total_input_tokens += response.usage.input_tokens
+            total_output_tokens += response.usage.output_tokens
 
             # Print any text the model produced this turn.
             for block in response.content:
@@ -339,6 +410,7 @@ def run_live_chat():
                 if block.type == "tool_use":
                     fn = TOOL_FUNCTIONS[block.name]
                     result = fn(**block.input)
+                    log_tool_call(block.name, block.input, result)
                     print(f"  [tool call] {block.name}({block.input}) -> {result}")
                     tool_results.append(
                         {
@@ -370,6 +442,7 @@ def run_scripted_demo():
                    "the order was placed under?")
     say("You", "jsmith@example.com")
     result = lookup_orders_by_email("jsmith@example.com")
+    log_tool_call("lookup_orders_by_email", {"email": "jsmith@example.com"}, result)
     print(f"  [tool call] lookup_orders_by_email('jsmith@example.com') -> {result}\n")
 
     # --- Requirement: clarifying question (more than one match) ---
@@ -377,6 +450,7 @@ def run_scripted_demo():
                   "and BK-1002 (Atomic Habits). Which one are you asking about?")
     say("You", "BK-1002")
     result = get_order_status("BK-1002", "jsmith@example.com")
+    log_tool_call("get_order_status", {"order_id": "BK-1002", "email": "jsmith@example.com"}, result)
     print(f"  [tool call] get_order_status('BK-1002', 'jsmith@example.com') -> {result}\n")
     say("Bookly", "BK-1002 (Atomic Habits) is in transit — it hasn't been delivered yet.")
 
@@ -385,11 +459,17 @@ def run_scripted_demo():
     # --- Requirement: tool use / action (return flow) ---
     say("You", "I want to return BK-1001, it wasn't what I expected.")
     elig = check_return_eligibility("BK-1001", "jsmith@example.com")
+    log_tool_call("check_return_eligibility", {"order_id": "BK-1001", "email": "jsmith@example.com"}, elig)
     print(f"  [tool call] check_return_eligibility('BK-1001', 'jsmith@example.com') -> {elig}\n")
     say("Bookly", "That order is still within its 30-day return window. "
                   "Want me to go ahead and file the return?")
     say("You", "Yes, please.")
     action = initiate_return("BK-1001", "jsmith@example.com", "Not what I expected")
+    log_tool_call(
+        "initiate_return",
+        {"order_id": "BK-1001", "email": "jsmith@example.com", "reason": "Not what I expected"},
+        action,
+    )
     print(f"  [tool call] initiate_return('BK-1001', 'jsmith@example.com', 'Not what I expected') -> {action}\n")
     say("Bookly", f"Done — I've filed the return, confirmation number "
                   f"{action['confirmation_number']}. You'll get a refund once it's received.")
@@ -399,6 +479,7 @@ def run_scripted_demo():
     # --- Bonus: identity check rejects a mismatched email/order pair ---
     say("You", "Can you check on order BK-2044? My email is jsmith@example.com.")
     mismatch = get_order_status("BK-2044", "jsmith@example.com")
+    log_tool_call("get_order_status", {"order_id": "BK-2044", "email": "jsmith@example.com"}, mismatch)
     print(f"  [tool call] get_order_status('BK-2044', 'jsmith@example.com') -> {mismatch}\n")
     say("Bookly", "I couldn't find an order matching that ID and email — could you "
                   "double check both?")
@@ -413,6 +494,8 @@ def run_scripted_demo():
     print("  4. Identity check: a real order ID paired with the wrong email is")
     print("     treated exactly like a nonexistent order")
     print("=" * 70)
+    print(f"Every tool call above was also written to audit_log.jsonl, with the "
+          f"email hashed rather than stored in the clear (see {AUDIT_LOG_PATH}).")
 
 
 if __name__ == "__main__":

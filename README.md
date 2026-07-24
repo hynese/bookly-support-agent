@@ -20,11 +20,45 @@ implementation of that idea.
 - `bookly_agent.py` — the agent. Claude (via tool-calling) decides when to
   look up order data, ask a clarifying question, or take an action (filing a
   return). All "backend" data is mocked in-memory — see `MOCK_ORDERS`.
+- `agent_policies.md` — the plain-language rules the agent follows, loaded
+  at runtime rather than hardcoded in Python. See "AOP-style configuration"
+  below for why.
 - `test_bookly_agent.py` — a small set of assert-based checks on the tool
   functions (not-found, identity mismatch, ineligible returns, multi-order
-  lookup). No LLM calls, no extra dependencies — run with
-  `python3 test_bookly_agent.py`.
+  lookup, policy loading, audit logging). No LLM calls, no extra
+  dependencies — run with `python3 test_bookly_agent.py`.
 - `requirements.txt` — one dependency: the `anthropic` SDK.
+- `.gitignore` — excludes `audit_log.jsonl` and `__pycache__/`, since those
+  are runtime artifacts, not source.
+
+## AOP-style configuration
+
+Decagon's real differentiator is Agent Operating Procedures: a CX ops
+person edits plain-language rules directly, without touching code or filing
+an engineering ticket. This prototype mirrors that pattern in miniature —
+every behavior rule (identity check, when to ask a clarifying question,
+what's out of scope) lives in `agent_policies.md`, and `bookly_agent.py`
+loads it at runtime. Change a rule in that file and the agent's behavior
+changes on the next run; the Python file doesn't need to change. It's a
+deliberate structural choice, not just a docs file — see `load_policies()`
+in `bookly_agent.py`.
+
+## Cost awareness
+
+Live mode tracks input/output token usage per conversation and prints an
+estimated cost on exit, using Sonnet 4.5's published per-token pricing
+(check anthropic.com/pricing for current rates — this is illustrative, not
+a live price feed). The point: an enterprise buyer cares about
+cost-per-resolution, not just resolution rate, and the repo should be able
+to answer that question even roughly.
+
+## Audit logging
+
+Every tool call is appended to `audit_log.jsonl` (git-ignored) with a
+timestamp and a hashed — never raw — customer email. This isn't a
+production logging/SIEM pipeline; it's a minimal, honest answer to the
+question an F500 buyer with 10,000+ employees will actually ask: how do you
+handle auditability and PII?
 
 ## Identity verification
 
@@ -150,6 +184,19 @@ Mock order IDs available: `BK-1001`, `BK-1002` (both under
 - Live mode has basic error handling around the API call (a network hiccup
   prints a friendly message instead of crashing the conversation) but no
   retry logic — a real deployment would want that.
+- Chat only, not voice. The assignment allows either; chat is where Bookly's
+  order/returns volume actually lives, and a 4-hour build isn't enough time
+  to also validate a voice turn-taking and transcription pipeline. Voice
+  would be the second channel added, not the first — see `agent_policies.md`.
+- The test suite covers the deterministic tool functions, not the LLM's
+  conversational behavior (e.g., whether it accepts "yeah go ahead" as
+  confirmation as reliably as "yes"). That's a real and known gap — LLM
+  behavior isn't unit-testable the same way rule-based code is — rather
+  than an oversight.
+- Explicitly out of scope (see `agent_policies.md` for the full list):
+  exchanges, partial refunds, gift returns, damaged/defective item claims,
+  and non-English support. The agent is instructed to say it can't help
+  with these rather than improvise a workflow for them.
 
 ## What I'd change with more production time
 
