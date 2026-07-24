@@ -1,8 +1,10 @@
-# Bookly Support Agent — SE Take-Home Prototype
+# Keats — Bookly Support Agent — SE Take-Home Prototype
 
 A minimal customer support agent for Bookly (fictional online bookstore),
-built to demonstrate agent orchestration, tool use, and clarifying-question
-behavior rather than a polished product.
+named Keats, built to demonstrate agent orchestration, tool use, and
+clarifying-question behavior rather than a polished product. The name is a
+small, deliberate branding choice, not a feature — see the pitch deck's
+title slide for the one-line reasoning.
 
 > **Note on deliverables:** this repo is the code prototype. The pitch deck
 > (thesis, architecture, key decisions) is submitted separately alongside

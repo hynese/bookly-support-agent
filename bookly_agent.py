@@ -331,7 +331,9 @@ TOOLS = [
     },
 ]
 
-SYSTEM_PROMPT = f"""You are Bookly's customer support agent. Bookly is an online bookstore.
+SYSTEM_PROMPT = f"""You are Keats, Bookly's customer support agent. Bookly is an online bookstore.
+Introduce yourself as Keats if a customer asks who they're talking to, but don't
+lead with your name unprompted — you're a support agent, not a mascot.
 
 {load_policies()}
 """
@@ -356,7 +358,7 @@ def run_live_chat():
     total_input_tokens = 0
     total_output_tokens = 0
 
-    print("Bookly Support (type 'quit' to exit)\n")
+    print("Keats — Bookly Support (type 'quit' to exit)\n")
     while True:
         user_input = input("You: ").strip()
         if user_input.lower() in ("quit", "exit"):
@@ -387,7 +389,7 @@ def run_live_chat():
             except Exception as e:
                 # A transient network/rate-limit error shouldn't crash a live
                 # demo mid-conversation — surface it and let the customer retry.
-                print(f"Bookly: Sorry, I'm having trouble reaching the system right "
+                print(f"Keats: Sorry, I'm having trouble reaching the system right "
                       f"now ({e}). Could you try again in a moment?\n")
                 messages.pop()  # drop the user turn we couldn't get a response to
                 break
@@ -399,7 +401,7 @@ def run_live_chat():
             # Print any text the model produced this turn.
             for block in response.content:
                 if block.type == "text":
-                    print(f"Bookly: {block.text}\n")
+                    print(f"Keats: {block.text}\n")
 
             if response.stop_reason != "tool_use":
                 break  # model is done, waiting on the next user message
@@ -438,7 +440,7 @@ def run_scripted_demo():
 
     # --- Requirement: multi-turn interaction ---
     say("You", "Where's my order?")
-    say("Bookly", "Happy to check! Could you give me your order ID, or the email "
+    say("Keats", "Happy to check! Could you give me your order ID, or the email "
                    "the order was placed under?")
     say("You", "jsmith@example.com")
     result = lookup_orders_by_email("jsmith@example.com")
@@ -446,13 +448,13 @@ def run_scripted_demo():
     print(f"  [tool call] lookup_orders_by_email('jsmith@example.com') -> {result}\n")
 
     # --- Requirement: clarifying question (more than one match) ---
-    say("Bookly", "I found two orders on that email: BK-1001 (The Midnight Library) "
+    say("Keats", "I found two orders on that email: BK-1001 (The Midnight Library) "
                   "and BK-1002 (Atomic Habits). Which one are you asking about?")
     say("You", "BK-1002")
     result = get_order_status("BK-1002", "jsmith@example.com")
     log_tool_call("get_order_status", {"order_id": "BK-1002", "email": "jsmith@example.com"}, result)
     print(f"  [tool call] get_order_status('BK-1002', 'jsmith@example.com') -> {result}\n")
-    say("Bookly", "BK-1002 (Atomic Habits) is in transit — it hasn't been delivered yet.")
+    say("Keats", "BK-1002 (Atomic Habits) is in transit — it hasn't been delivered yet.")
 
     print("-" * 70 + "\n")
 
@@ -461,7 +463,7 @@ def run_scripted_demo():
     elig = check_return_eligibility("BK-1001", "jsmith@example.com")
     log_tool_call("check_return_eligibility", {"order_id": "BK-1001", "email": "jsmith@example.com"}, elig)
     print(f"  [tool call] check_return_eligibility('BK-1001', 'jsmith@example.com') -> {elig}\n")
-    say("Bookly", "That order is still within its 30-day return window. "
+    say("Keats", "That order is still within its 30-day return window. "
                   "Want me to go ahead and file the return?")
     say("You", "Yes, please.")
     action = initiate_return("BK-1001", "jsmith@example.com", "Not what I expected")
@@ -471,7 +473,7 @@ def run_scripted_demo():
         action,
     )
     print(f"  [tool call] initiate_return('BK-1001', 'jsmith@example.com', 'Not what I expected') -> {action}\n")
-    say("Bookly", f"Done — I've filed the return, confirmation number "
+    say("Keats", f"Done — I've filed the return, confirmation number "
                   f"{action['confirmation_number']}. You'll get a refund once it's received.")
 
     print("-" * 70 + "\n")
@@ -481,7 +483,7 @@ def run_scripted_demo():
     mismatch = get_order_status("BK-2044", "jsmith@example.com")
     log_tool_call("get_order_status", {"order_id": "BK-2044", "email": "jsmith@example.com"}, mismatch)
     print(f"  [tool call] get_order_status('BK-2044', 'jsmith@example.com') -> {mismatch}\n")
-    say("Bookly", "I couldn't find an order matching that ID and email — could you "
+    say("Keats", "I couldn't find an order matching that ID and email — could you "
                   "double check both?")
     print("  (BK-2044 is real, but belongs to a different customer's email. The agent "
           "never confirms that — same response as a made-up order ID.)\n")

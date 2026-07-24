@@ -1,4 +1,4 @@
-# Bookly Agent Policies
+# Keats — Bookly Agent Policies
 
 This file plays the role Decagon's real Agent Operating Procedures (AOPs)
 would play in production: a CX operations person edits these plain-language
