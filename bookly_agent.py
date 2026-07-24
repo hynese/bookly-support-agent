@@ -27,6 +27,14 @@ minimum requirements:
   - clarifying question      -> ambiguous or missing info triggers a question,
                                  not a guess
 
+IDENTITY VERIFICATION (added after initial review):
+Every tool that reveals order details or takes an action requires the
+customer's email to match the order on file. A mismatch is treated exactly
+like "order not found" — the agent never confirms an order ID exists to
+someone whose email doesn't match it. This closes the gap where the first
+version would happily return status or file a return for any order ID
+handed to it, regardless of who was asking.
+
 Run modes:
   python bookly_agent.py            -> live chat using the Claude API (needs
                                         ANTHROPIC_API_KEY set in your environment)
@@ -74,11 +82,26 @@ MOCK_ORDERS = {
 }
 
 
-def get_order_status(order_id: str) -> dict:
-    """Tool: look up the shipping status of one order."""
+def _verified_order(order_id: str, email: str):
+    """Shared identity check: an order is only returned if the email on file
+    matches. A wrong email produces the exact same result as a nonexistent
+    order — we never confirm an order ID is real to someone who can't prove
+    it's theirs. Returns the order dict if verified, else None."""
     order = MOCK_ORDERS.get(order_id.upper())
+    if not order or order["email"].lower() != email.lower():
+        return None
+    return order
+
+
+def get_order_status(order_id: str, email: str) -> dict:
+    """Tool: look up the shipping status of one order. Requires the email on
+    the order to match — see _verified_order."""
+    order = _verified_order(order_id, email)
     if not order:
-        return {"found": False, "error": f"No order found with ID {order_id}."}
+        return {
+            "found": False,
+            "error": f"No order found matching ID {order_id} and that email.",
+        }
     return {
         "found": True,
         "order_id": order_id.upper(),
@@ -88,11 +111,15 @@ def get_order_status(order_id: str) -> dict:
     }
 
 
-def check_return_eligibility(order_id: str) -> dict:
-    """Tool: determine whether an order is still inside its return window."""
-    order = MOCK_ORDERS.get(order_id.upper())
+def check_return_eligibility(order_id: str, email: str) -> dict:
+    """Tool: determine whether an order is still inside its return window.
+    Requires the email on the order to match."""
+    order = _verified_order(order_id, email)
     if not order:
-        return {"found": False, "error": f"No order found with ID {order_id}."}
+        return {
+            "found": False,
+            "error": f"No order found matching ID {order_id} and that email.",
+        }
     if order["status"] != "delivered":
         return {
             "found": True,
@@ -113,11 +140,17 @@ def check_return_eligibility(order_id: str) -> dict:
     }
 
 
-def initiate_return(order_id: str, reason: str) -> dict:
-    """Tool: file a return request. This is the 'action' the agent takes."""
-    order = MOCK_ORDERS.get(order_id.upper())
+def initiate_return(order_id: str, email: str, reason: str) -> dict:
+    """Tool: file a return request. This is the 'action' the agent takes.
+    Requires the email on the order to match — the agent should also have
+    called check_return_eligibility first, but this function re-verifies
+    identity independently rather than trusting the caller."""
+    order = _verified_order(order_id, email)
     if not order:
-        return {"success": False, "error": f"No order found with ID {order_id}."}
+        return {
+            "success": False,
+            "error": f"No order found matching ID {order_id} and that email.",
+        }
     # Mocked side effect — in production this would call Bookly's returns API.
     return {
         "success": True,
@@ -155,46 +188,54 @@ TOOLS = [
         "name": "get_order_status",
         "description": (
             "Look up the shipping status of a specific Bookly order. "
-            "Requires the order ID. Use this whenever a customer asks "
-            "'where is my order' or similar, once you have an order ID."
+            "Requires the order ID AND the email on the order — this is an "
+            "identity check, not just a lookup key. If the email doesn't match "
+            "the order, this returns 'not found' rather than confirming the "
+            "order exists. Use this whenever a customer asks 'where is my "
+            "order' or similar, once you have both an order ID and their email."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "order_id": {"type": "string", "description": "e.g. BK-1001"},
+                "email": {"type": "string", "description": "The email the customer says the order was placed under"},
             },
-            "required": ["order_id"],
+            "required": ["order_id", "email"],
         },
     },
     {
         "name": "check_return_eligibility",
         "description": (
             "Check whether a delivered order is still within its return window. "
-            "Always call this before telling a customer they can or can't return "
-            "an item — never assume."
+            "Requires the order ID and the email on the order (same identity "
+            "check as get_order_status). Always call this before telling a "
+            "customer they can or can't return an item — never assume."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "order_id": {"type": "string"},
+                "email": {"type": "string"},
             },
-            "required": ["order_id"],
+            "required": ["order_id", "email"],
         },
     },
     {
         "name": "initiate_return",
         "description": (
-            "File a return for an order. Only call this after the customer has "
-            "confirmed they want to proceed AND check_return_eligibility has "
-            "returned eligible=true. Never call this speculatively."
+            "File a return for an order. Requires the order ID and the email on "
+            "the order. Only call this after the customer has confirmed they "
+            "want to proceed AND check_return_eligibility has returned "
+            "eligible=true. Never call this speculatively."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "order_id": {"type": "string"},
+                "email": {"type": "string"},
                 "reason": {"type": "string", "description": "Customer's stated reason for the return"},
             },
-            "required": ["order_id", "reason"],
+            "required": ["order_id", "email", "reason"],
         },
     },
     {
@@ -220,14 +261,22 @@ Core rules (non-negotiable):
 1. Never state an order's status, delivery date, or return eligibility from memory —
    always call a tool to get real data first. If you don't have an order ID, ask for
    one or use lookup_orders_by_email.
-2. If a customer's request is ambiguous — no order ID given, or lookup_orders_by_email
+2. Identity check: get_order_status, check_return_eligibility, and initiate_return all
+   require the customer's email in addition to the order ID. If you don't have it yet,
+   ask for it before calling these tools. Once a customer has given you their email in
+   this conversation, you may reuse it for follow-up questions about the same order
+   without asking again.
+3. If a tool comes back "not found," tell the customer you couldn't find a matching
+   order — never imply whether that's because the order ID is wrong, the email is
+   wrong, or the order belongs to someone else. Don't speculate about which.
+4. If a customer's request is ambiguous — no order ID given, or lookup_orders_by_email
    returns more than one order — ask a clarifying question naming the specific options
    before proceeding. Do not guess which order they mean.
-3. Before calling initiate_return, you must have (a) confirmed eligibility via
+5. Before calling initiate_return, you must have (a) confirmed eligibility via
    check_return_eligibility and (b) had the customer explicitly confirm they want to
    return that specific item. Never file a return speculatively.
-4. Keep responses short and friendly, the way a good human support rep would.
-5. For general policy questions (shipping times, password resets, etc.) you may answer
+6. Keep responses short and friendly, the way a good human support rep would.
+7. For general policy questions (shipping times, password resets, etc.) you may answer
    directly using standard e-commerce norms — those don't require a tool call.
 """
 
@@ -258,13 +307,22 @@ def run_live_chat():
 
         # Keep calling Claude until it stops requesting tools.
         while True:
-            response = client.messages.create(
-                model="claude-sonnet-4-5",
-                max_tokens=1024,
-                system=SYSTEM_PROMPT,
-                tools=TOOLS,
-                messages=messages,
-            )
+            try:
+                response = client.messages.create(
+                    model="claude-sonnet-4-5",
+                    max_tokens=1024,
+                    system=SYSTEM_PROMPT,
+                    tools=TOOLS,
+                    messages=messages,
+                )
+            except Exception as e:
+                # A transient network/rate-limit error shouldn't crash a live
+                # demo mid-conversation — surface it and let the customer retry.
+                print(f"Bookly: Sorry, I'm having trouble reaching the system right "
+                      f"now ({e}). Could you try again in a moment?\n")
+                messages.pop()  # drop the user turn we couldn't get a response to
+                break
+
             messages.append({"role": "assistant", "content": response.content})
 
             # Print any text the model produced this turn.
@@ -318,29 +376,42 @@ def run_scripted_demo():
     say("Bookly", "I found two orders on that email: BK-1001 (The Midnight Library) "
                   "and BK-1002 (Atomic Habits). Which one are you asking about?")
     say("You", "BK-1002")
-    result = get_order_status("BK-1002")
-    print(f"  [tool call] get_order_status('BK-1002') -> {result}\n")
+    result = get_order_status("BK-1002", "jsmith@example.com")
+    print(f"  [tool call] get_order_status('BK-1002', 'jsmith@example.com') -> {result}\n")
     say("Bookly", "BK-1002 (Atomic Habits) is in transit — it hasn't been delivered yet.")
 
     print("-" * 70 + "\n")
 
     # --- Requirement: tool use / action (return flow) ---
     say("You", "I want to return BK-1001, it wasn't what I expected.")
-    elig = check_return_eligibility("BK-1001")
-    print(f"  [tool call] check_return_eligibility('BK-1001') -> {elig}\n")
+    elig = check_return_eligibility("BK-1001", "jsmith@example.com")
+    print(f"  [tool call] check_return_eligibility('BK-1001', 'jsmith@example.com') -> {elig}\n")
     say("Bookly", "That order is still within its 30-day return window. "
                   "Want me to go ahead and file the return?")
     say("You", "Yes, please.")
-    action = initiate_return("BK-1001", "Not what I expected")
-    print(f"  [tool call] initiate_return('BK-1001', 'Not what I expected') -> {action}\n")
+    action = initiate_return("BK-1001", "jsmith@example.com", "Not what I expected")
+    print(f"  [tool call] initiate_return('BK-1001', 'jsmith@example.com', 'Not what I expected') -> {action}\n")
     say("Bookly", f"Done — I've filed the return, confirmation number "
                   f"{action['confirmation_number']}. You'll get a refund once it's received.")
 
+    print("-" * 70 + "\n")
+
+    # --- Bonus: identity check rejects a mismatched email/order pair ---
+    say("You", "Can you check on order BK-2044? My email is jsmith@example.com.")
+    mismatch = get_order_status("BK-2044", "jsmith@example.com")
+    print(f"  [tool call] get_order_status('BK-2044', 'jsmith@example.com') -> {mismatch}\n")
+    say("Bookly", "I couldn't find an order matching that ID and email — could you "
+                  "double check both?")
+    print("  (BK-2044 is real, but belongs to a different customer's email. The agent "
+          "never confirms that — same response as a made-up order ID.)\n")
+
     print("=" * 70)
-    print("All three minimum requirements demonstrated above:")
+    print("All three minimum requirements demonstrated above, plus an identity guardrail:")
     print("  1. Multi-turn: asked for email before answering")
     print("  2. Clarifying question: asked which of two orders was meant")
     print("  3. Tool use / action: checked eligibility, then filed a real return")
+    print("  4. Identity check: a real order ID paired with the wrong email is")
+    print("     treated exactly like a nonexistent order")
     print("=" * 70)
 
 

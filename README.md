@@ -4,6 +4,11 @@ A minimal customer support agent for Bookly (fictional online bookstore),
 built to demonstrate agent orchestration, tool use, and clarifying-question
 behavior rather than a polished product.
 
+> **Note on deliverables:** this repo is the code prototype. The pitch deck
+> (thesis, architecture, key decisions) is submitted separately alongside
+> this repo link, per the assignment's two-part deliverable structure — it
+> isn't duplicated in here.
+
 ## The thesis
 
 A good CX agent should never guess when it can verify, and never act when it
@@ -15,7 +20,23 @@ implementation of that idea.
 - `bookly_agent.py` — the agent. Claude (via tool-calling) decides when to
   look up order data, ask a clarifying question, or take an action (filing a
   return). All "backend" data is mocked in-memory — see `MOCK_ORDERS`.
+- `test_bookly_agent.py` — a small set of assert-based checks on the tool
+  functions (not-found, identity mismatch, ineligible returns, multi-order
+  lookup). No LLM calls, no extra dependencies — run with
+  `python3 test_bookly_agent.py`.
 - `requirements.txt` — one dependency: the `anthropic` SDK.
+
+## Identity verification
+
+Every tool that reveals order details or takes an action
+(`get_order_status`, `check_return_eligibility`, `initiate_return`) requires
+the customer's email to match the order on file. A real order ID paired
+with the wrong email produces the exact same response as a nonexistent
+order — the agent never confirms an order ID is valid to someone who can't
+prove it's theirs. This is a deliberate fix for a gap in the first version,
+where any order ID would work regardless of who was asking. It's still a
+mocked, email-only check, not real authentication — see "What I'd change"
+below.
 
 ## Running it — no Cursor, no GitHub, just Terminal
 
@@ -91,6 +112,19 @@ Try asking things like:
   then files the return)
 - Something with no order ID or email you make up (agent should say it can't
   find it rather than inventing a status)
+- Ask about `BK-2044` while claiming to be `jsmith@example.com` (that order
+  is real but belongs to a different customer — the agent should say it
+  can't find a match, not reveal that the order ID itself is valid)
+
+## Running the tests
+
+```bash
+python3 test_bookly_agent.py
+```
+
+No API key or network access needed — this checks the mocked backend
+functions directly (identity verification, return eligibility, multi-order
+lookup) and prints pass/fail for each case.
 
 **Offline walkthrough** (no API key needed — a scripted rehearsal/recording
 safety net that exercises the same tool functions):
@@ -108,15 +142,18 @@ Mock order IDs available: `BK-1001`, `BK-1002` (both under
   shallow pass across everything Bookly's support inbox sees.
 - Data is entirely mocked and in-memory; "today" is pinned to 2026-07-23 so
   the return-window math is deterministic for the demo.
-- No auth/identity verification layer — assumed out of scope for a 4-hour
-  prototype, called out explicitly in the deck as the first thing to add for
-  production.
+- Identity verification is email-match only (see above) — not real
+  authentication (no password, session, or verification code). Good enough
+  to prove the design pattern; not good enough for production.
 - Single-turn tool loop with no persistent memory across sessions (memory =
   the in-process message list only).
+- Live mode has basic error handling around the API call (a network hiccup
+  prints a friendly message instead of crashing the conversation) but no
+  retry logic — a real deployment would want that.
 
 ## What I'd change with more production time
 
 See the last slide of the deck — short version: real order-management API
-instead of the mock, identity verification before returning any account
-data, and a human-escalation path for anything the agent isn't confident
-about.
+instead of the mock, real customer authentication (not just an email match)
+before returning any account data, and a human-escalation path for anything
+the agent isn't confident about.
